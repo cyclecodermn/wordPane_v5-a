@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ChatGPT Pane (Demo)</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@1.5.10/css/pico.min.css">
+  <style>
+    :root { --pico-font-family: system-ui, sans-serif; }
+    body { max-width: 420px; margin: auto; padding: 0.5rem; }
+    .hidden { display: none; }
+    .card { border: 1px solid var(--pico-muted-border); border-radius: var(--pico-border-radius); padding: 1rem; margin-bottom: 1rem; }
+    .status-pill { display: inline-block; padding: 0.2rem 0.5rem; border-radius: 1rem; background: var(--pico-primary); color: #fff; font-size: 0.75rem; }
+    .info-bar { font-size: 0.75rem; color: var(--pico-muted-color); }
+  </style>
+</head>
+<body>
+<header>
+  <h1>ChatGPT Pane (Demo)</h1>
+</header>
+<main>
+  <section id="signin-card" class="card" aria-labelledby="signin-title">
+    <h2 id="signin-title">Sign in</h2>
+    <button id="oauth-btn" class="primary">Sign in with OpenAI (OAuth)</button>
+    <p>ChatGPT login page can’t be embedded in a pane; this opens a popup/new tab.</p>
+    <p><a href="#" id="show-key">Use API key instead</a></p>
+  </section>
+
+  <section id="key-card" class="card hidden" aria-labelledby="key-title">
+    <h2 id="key-title">API key fallback</h2>
+    <label for="api-key">Paste API key</label>
+    <input id="api-key" type="password" autocomplete="off">
+    <button id="use-key">Use Key</button>
+    <p id="key-msg"></p>
+  </section>
+
+  <section id="signed-card" class="card hidden" aria-labelledby="signed-title">
+    <h2 id="signed-title">Account</h2>
+    <div id="profile" style="display:flex;align-items:center;gap:0.5rem;">
+      <img id="avatar" src="" alt="avatar" width="40" height="40" style="border-radius:50%;background:#ccc;">
+      <div>
+        <strong id="name"></strong><br>
+        <span id="email"></span>
+      </div>
+    </div>
+    <p class="status-pill" id="status-pill">Connected</p>
+    <p id="method"></p>
+    <pre id="details" aria-label="Account details"></pre>
+    <p><a href="#" id="signout">Sign out</a></p>
+  </section>
+</main>
+<footer class="info-bar">
+  ChatGPT can’t be iframed due to CSP. <a href="#" id="show-info">What’s this?</a>
+  <div id="info" class="hidden">OAuth opens a popup; API key fallback is for local testing only. Tokens/keys are kept in sessionStorage and never logged. Use a tiny Node/Express proxy for token exchange & CORS in production.</div>
+</footer>
+
+<script>
+// Developer flips to true when OAuth endpoints are ready
+const OAUTH_AVAILABLE = false;
+
+// Session state
+let state = { authMethod: 'none', displayName: '', email: '', maskedKey: '', org: '', plan: '', tokenPresent: false };
+try {
+  const saved = sessionStorage.getItem('state');
+  if (saved) state = JSON.parse(saved);
+} catch(e) {}
+
+function saveState(){
+  sessionStorage.setItem('state', JSON.stringify(state));
+}
+function show(id, visible){
+  document.getElementById(id).classList.toggle('hidden', !visible);
+}
+
+function render(){
+  if (state.authMethod === 'none') {
+    show('signin-card', true);
+    show('key-card', false);
+    show('signed-card', false);
+  } else {
+    show('signin-card', false);
+    show('key-card', false);
+    show('signed-card', true);
+    document.getElementById('method').textContent = state.authMethod === 'oauth' ? 'Signed in via OAuth' : 'API key in use';
+    document.getElementById('name').textContent = state.displayName || 'User';
+    document.getElementById('email').textContent = state.email || '';
+    document.getElementById('details').textContent = JSON.stringify({
+      display_name: state.displayName,
+      email: state.email,
+      org: state.org || 'n/a',
+      plan: state.plan || 'n/a'
+    }, null, 2);
+  }
+}
+
+// Toggle API key card
+ document.getElementById('show-key').addEventListener('click', e => {
+   e.preventDefault();
+   show('key-card', true);
+ });
+
+// Handle API key usage
+ document.getElementById('use-key').addEventListener('click', async () => {
+   const keyInput = document.getElementById('api-key');
+   const rawKey = keyInput.value.trim();
+   if (!rawKey) return;
+   const masked = rawKey.replace(/.(?=.{4})/g, '*');
+   state = { authMethod: 'apiKey', maskedKey: masked, displayName: '', email: '', org: '', plan: '', tokenPresent: true };
+   saveState();
+   try {
+     const res = await fetch('https://api.openai.com/v1/models', { headers: { 'Authorization': 'Bearer ' + rawKey } });
+     if (!res.ok) throw new Error(res.status);
+   } catch (err) {
+     document.getElementById('key-msg').textContent = 'Validation failed (CORS likely); a dev proxy is recommended.';
+   }
+   keyInput.value = '';
+   render();
+ });
+
+// Sign out
+ document.getElementById('signout').addEventListener('click', e => {
+   e.preventDefault();
+   sessionStorage.clear();
+   state = { authMethod: 'none', displayName: '', email: '', maskedKey: '', org: '', plan: '', tokenPresent: false };
+   render();
+ });
+
+// OAuth handler
+ document.getElementById('oauth-btn').addEventListener('click', () => {
+   if (!OAUTH_AVAILABLE) {
+     alert('OAuth not configured in this demo.');
+     return;
+   }
+   startOAuth();
+ });
+
+ document.getElementById('show-info').addEventListener('click', e => {
+   e.preventDefault();
+   document.getElementById('info').classList.toggle('hidden');
+ });
+
+// OAuth placeholders
+const OPENAI_CLIENT_ID = 'YOUR_CLIENT_ID';
+const OPENAI_REDIRECT_URI = 'YOUR_REDIRECT_URI';
+const OPENAI_AUTH_URL = 'https://example.com/oauth/authorize';
+const OPENAI_TOKEN_URL = 'https://example.com/oauth/token';
+const OPENAI_USERINFO_URL = 'https://example.com/oauth/userinfo';
+
+function generateCodeVerifier(){
+  const array = new Uint8Array(32);
+  crypto.getRandomValues(array);
+  return btoa(String.fromCharCode.apply(null, array)).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/, '');
+}
+async function generateCodeChallenge(verifier){
+  const data = new TextEncoder().encode(verifier);
+  const digest = await crypto.subtle.digest('SHA-256', data);
+  return btoa(String.fromCharCode.apply(null, new Uint8Array(digest))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/, '');
+}
+async function startOAuth(){
+  const verifier = generateCodeVerifier();
+  sessionStorage.setItem('pkce_verifier', verifier);
+  const challenge = await generateCodeChallenge(verifier);
+  const url = `${OPENAI_AUTH_URL}?client_id=${encodeURIComponent(OPENAI_CLIENT_ID)}&redirect_uri=${encodeURIComponent(OPENAI_REDIRECT_URI)}&response_type=code&code_challenge=${challenge}&code_challenge_method=S256&scope=openid%20profile%20email`;
+  window.open(url, '_blank', 'noopener');
+}
+async function handleRedirect(){
+  const params = new URLSearchParams(location.search);
+  const code = params.get('code');
+  if(!code) return;
+  const verifier = sessionStorage.getItem('pkce_verifier');
+  try {
+    const tokenRes = await fetch(OPENAI_TOKEN_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        code,
+        redirect_uri: OPENAI_REDIRECT_URI,
+        client_id: OPENAI_CLIENT_ID,
+        code_verifier: verifier
+      })
+    });
+    const token = await tokenRes.json();
+    sessionStorage.setItem('access_token', token.access_token);
+    await fetchUserInfo(token.access_token);
+  } catch(err){
+    console.log('Token exchange failed. Use a server proxy to avoid CORS and secure secrets.');
+  }
+}
+async function fetchUserInfo(token){
+  try {
+    const res = await fetch(OPENAI_USERINFO_URL, { headers: { Authorization: 'Bearer ' + token } });
+    const info = await res.json();
+    state = { authMethod: 'oauth', displayName: info.name, email: info.email, maskedKey: '', org: info.org || '', plan: info.plan || '', tokenPresent: true };
+    saveState();
+    render();
+  } catch(err){
+    console.log('Fetching user info failed', err);
+  }
+}
+
+// Simulate OAuth success for local testing
+if (OAUTH_AVAILABLE) {
+  // Uncomment to handle real redirects
+  // handleRedirect();
+  const sim = document.createElement('button');
+  sim.textContent = 'Simulate OAuth success';
+  sim.addEventListener('click', () => {
+    state = { authMethod: 'oauth', displayName: 'Demo User', email: 'demo@example.com', maskedKey: '', org: 'demo-org', plan: 'free', tokenPresent: true };
+    saveState();
+    render();
+  });
+  document.getElementById('signin-card').appendChild(sim);
+}
+
+render();
+</script>
+</body>
+</html>
